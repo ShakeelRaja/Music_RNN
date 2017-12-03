@@ -3,7 +3,8 @@ structure augmented RNNs for Music Generation
 
 ## REQUIREMENTS:
 ### Python 2.7
-### TensorFlow 0.8 CPU (the code is being updated to run at TF 1.3 GPU with python3.5)
+### TensorFlow 0.8 CPU 
+(the code is being updated to run at TF 1.3 GPU with python3.5)
   https://storage.googleapis.com/tensorflow/linux/cpu/tensorflow-0.8.0-cp27-none-linux_x86_64.whl
 ### Python midi library:
   git+https://github.com/vishnubob/python-midi#egg=midi
