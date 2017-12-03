@@ -9,9 +9,12 @@ structure augmented RNNs for Music Generation
 ### Python midi library:
   git+https://github.com/vishnubob/python-midi#egg=midi
 ### pip install following 
-#### Mingus Notation Library: pip install mingus
-#### matplotlib  : pip install matplotlob
-#### numpy : pip install numpy
+#### Mingus Notation Library: 
+pip install mingus
+#### matplotlib  : 
+pip install matplotlob
+#### numpy : 
+pip install numpy
 
 ## FILES:
 #### preprocess.py 
