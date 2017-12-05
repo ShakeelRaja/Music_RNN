@@ -19,161 +19,11 @@ import mingus
 import mingus.core.chords
 import itertools
 
-from model import Model, NottinghamModel
-import tensorflow as tf
-
-import sys
-import logging
 from random import shuffle
-import time
-import random
-import string
+import copy 
 from collections import defaultdict
 import midi
 import matplotlib.pyplot as plt
-
-def get_config_name(config):
-    def replace_dot(s): return s.replace(".", "p")
-    return "numLayers_" + str(config.num_layers) + \
-           "_hidSize_" + str(config.hidden_size) + \
-            replace_dot("_melCoef_{}".format(config.melody_coeff)) + \
-            replace_dot("_dropOut_{}".format(config.dropout_prob)) + \
-            replace_dot("_inpDropOut_{}".format(config.input_dropout_prob)) + \
-            replace_dot("_timeBatchLen_{}".format(config.time_batch_len))+ \
-            replace_dot("_cellType_{}".format(config.cell_type))
-
-class DefaultConfig(object):
-    # model parameters
-    num_layers = 2
-    hidden_size = 200
-    melody_coeff = 0.5
-    dropout_prob = 0.5
-    input_dropout_prob = 0.8
-    cell_type = 'LSTM'
-
-    # learning parameters
-    max_time_batches = 10
-    time_batch_len = 128
-    learning_rate = 1e-3
-    learning_rate_decay = 0.9
-    num_epochs = 250
-
-    # metadata
-    dataset = 'softmax'
-    model_file = ''
-
-    def __repr__(self):
-        return """Num Layers: {}, Hidden Size: {}, Melody Coeff: {}, Dropout Prob: {}, Input Dropout Prob: {}, Cell Type: {}, Time Batch Len: {}, Learning Rate: {}, Decay: {}""".format(self.num_layers, self.hidden_size, self.melody_coeff, self.dropout_prob, self.input_dropout_prob, self.cell_type, self.time_batch_len, self.learning_rate, self.learning_rate_decay)
-
-def run_epoch(session, model, batches, training=False, testing=False):
-    """
-    session: Tensorflow session object
-    model: model object (see model.py)
-    batches: data object loaded from util_data()
-
-    training: A backpropagation iteration will be performed on the dataset
-    if this flag is active
-
-    returns average loss per time step over all batches.
-    if testing flag is active: returns [ loss, probs ] where is the probability
-        values for each note
-    """
-
-    # shuffle batches
-    shuffle(batches)
-
-    target_tensors = [model.loss, model.final_state]
-    if testing:
-        target_tensors.append(model.probs)
-        batch_probs = defaultdict(list)
-    if training:
-        target_tensors.append(model.train_step)
-
-    losses = []
-    for data, targets in batches:
-        # save state over unrolling time steps
-        batch_size = data[0].shape[1]
-        num_time_steps = len(data)
-        state = model.get_cell_zero_state(session, batch_size) 
-        probs = list()
-
-        for tb_data, tb_targets in zip(data, targets):
-            if testing:
-                tbd = tb_data
-                tbt = tb_targets
-            else:
-                # shuffle all the batches of input, state, and target
-                batches = tb_data.shape[1]
-                permutations = np.random.permutation(batches)
-                tbd = np.zeros_like(tb_data)
-                tbd[:, np.arange(batches), :] = tb_data[:, permutations, :]
-                tbt = np.zeros_like(tb_targets)
-                tbt[:, np.arange(batches), :] = tb_targets[:, permutations, :]
-                state[np.arange(batches)] = state[permutations]
-
-            feed_dict = {
-                model.initial_state: state,
-                model.seq_input: tbd,
-                model.seq_targets: tbt,
-            }
-            results = session.run(target_tensors, feed_dict=feed_dict)
-
-            losses.append(results[0])
-            state = results[1]
-            if testing:
-                batch_probs[num_time_steps].append(results[2])
-
-    loss = sum(losses) / len(losses)
-
-    if testing:
-        return [loss, batch_probs]
-    else:
-        return loss
-
-def batch_data(seqIn, num_time_steps):
-
-    seq = [s[:(num_time_steps*time_batch_len)+1, :] for s in seqIn]
-
-    # stack sequences depth wise (along third axis).
-    stacked = np.dstack(seq)
-    # swap axes so that shape is (SEQ_LENGTH X BATCH_SIZE X INPUT_DIM)
-    data = np.swapaxes(stacked, 1, 2)
-    # roll data -1 along lenth of sequence for next sequence prediction
-    targets = np.roll(data, -1, axis=0)
-    # cutoff final time step, cut of count from targets
-    data = data[:-1, :, :]
-    targets = targets[:-1, :, :-1] #-1 third axis to remove counter from targets 
-    
-    if counter == False:
-        assert data.shape == targets.shape #works without counter 
-
-    labels = np.ones((targets.shape[0], targets.shape[1], 2), dtype=np.int32)
-
-    #number of melody and harmony vectors must not contain more than one '1'
-    assert np.all(np.sum(targets[:, :, :Melody_Range], axis=2) <= 1)
-    assert np.all(np.sum(targets[:, :, Melody_Range:], axis=2) <= 1)
-
-    #set melody and harmony targets along the third axis
-    labels[:, :, 0] = np.argmax(targets[:, :, :Melody_Range], axis=2)
-    labels[:, :, 1] = np.argmax(targets[:, :, Melody_Range:], axis=2)
-    targets = labels
-    
-    # ensure data and target integrity 
-    assert targets.shape[:2] == data.shape[:2]
-    assert data.shape[0] == num_time_steps * time_batch_len 
-
-    # split sequences into time batches
-    tb_data = np.split(data, num_time_steps, axis=0)
-    tb_targets = np.split(targets, num_time_steps, axis=0)
-
-    assert len(tb_data) == len(tb_targets) == num_time_steps
-    for i in range(len(tb_data)):
-        assert tb_data[i].shape[0] == time_batch_len
-        assert tb_targets[i].shape[0] == time_batch_len
-#        if softmax:
-#            assert np.all(np.sum(tb_data[i], axis=2) == 2)
-    return (tb_data, tb_targets)
-
 
 def resolve_chord(chord):
     #change 7, 9, 11 and other un-resolved chords
@@ -316,6 +166,7 @@ def combine(melody, harmony):
 
 #%%##############################################################################################
 counter = True
+Shift = True
 
 pickle_loc = 'data/nottingham_subset.pickle'
 Melody_Max = 88
@@ -355,16 +206,42 @@ if __name__ == "__main__":
         
         #create counter vector , reverse and store in the data dictionary for appending later
         if counter == True:
-            l = []
-            for x in lens:
-                l += [range(x)]
+            length = []
             rev = []
-            for y in l:
+            shifts = []
+            length += [range(x) for x in lens]
+            for y in length:
                 y = y[::-1]
                 tt = ([[item] for item in y])
                 rev +=[tt]
-            data[d + '_count'] = rev       
-    
+            data[d + '_count'] = rev
+
+            #Calculate the value of shifts required to move 0 back to beginning of last note 
+            if Shift == True:
+                def shift(l,n):
+                    return itertools.islice(itertools.cycle(l),n,n+len(l))
+                rev2 = copy.deepcopy(rev)
+                shifted = []
+            #swap current and previous until note changes
+            for x, y in seqs:
+                n = -1
+                now = x[n,:]
+                prev = x[n-1,:]
+                #print now, prev
+                while (now == prev).all() :
+                    n = n-1
+                    now = x[n,:]
+                    prev = x[n-1,:]
+                shifts += [abs(n+1)]
+            #calculate the chifted counter values     
+            for count, roll in zip(rev2,shifts):
+                [count.append([0]) for x in range(roll)]                    
+                count = list(shift(count, roll))
+                count = count[:-roll]
+                shifted += [count] 
+
+            data[d + '_count_shift'] = shifted
+               
         # count chord frequencies from the dataset
         for _, harmony in seqs:
             for h in harmony:
@@ -406,22 +283,22 @@ if __name__ == "__main__":
         #save pickle data with optional counter
         if counter == True:        
             a = store[d]
-            b = data[d+'_count']
+            if Shift == True:
+                b = data[d+'_count_shift']
+            else:
+                b = data[d+'_count']
             result = []
             result = [np.hstack((a[0], np.array(b[0])))]
             for i in range(1, len(a)):
                 result.append(np.hstack((a[i], np.array(b[i]))))
             store[d] = result
-            filename= pickle_loc + "_counter"
+            filename= pickle_loc 
             with open(filename, 'w') as f:
                 cPickle.dump(store, f, protocol=-1)
         else:
             filename=pickle_loc
             with open(filename, 'w') as f:
                 cPickle.dump(store, f, protocol=-1)
-                
 
-    
-    
         
       
