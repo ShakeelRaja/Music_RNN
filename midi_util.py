@@ -10,6 +10,10 @@ from pprint import pprint
 RANGE = 128
 NO_CHORD = 'NONE'
 CHORD_BASE = 48
+Melody_Max = 88
+Melody_Min = 55
+# add one to the range for silence in melody
+Melody_Range = Melody_Max - Melody_Min + 1 + 1
 
 def round_tick(tick, time_step):
     return int(round(tick/float(time_step)) * time_step)
@@ -355,26 +359,7 @@ class NottinghamSampler(object):
         elif self.method == 'sample':
             return self.sample_notes_dist(probs)
 
-def i_vi_iv_v(chord_to_idx, repeats, input_dim):
-    r = Melody_Range
-    input_dim = input_dim - 1
 
-    i = np.zeros(input_dim)
-    i[r + chord_to_idx['CM']] = 1
-
-    vi = np.zeros(input_dim)
-    vi[r + chord_to_idx['Am']] = 1
-
-    iv = np.zeros(input_dim)
-    iv[r + chord_to_idx['FM']] = 1
-
-    v = np.zeros(input_dim)
-    v[r + chord_to_idx['GM']] = 1
-
-    full_seq = [i] * 16 + [vi] * 16 + [iv] * 16 + [v] * 16
-    full_seq = full_seq * repeats
-    
-    return full_seq
 
 
 

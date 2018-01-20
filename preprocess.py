@@ -22,12 +22,12 @@ import itertools
 from random import shuffle
 import copy 
 from collections import defaultdict
-import midi
+
 import matplotlib.pyplot as plt
 
 def resolve_chord(chord):
     #change 7, 9, 11 and other un-resolved chords
-    if chord in CHORD_BLACKLIST:
+    if chord in chordEliminate:
         return None
     # take the first of dual chords
     if "|" in chord:
@@ -53,12 +53,8 @@ def Parse_Data(input_dir, time_step, verbose=False):
     sequences = [ \
         Data_to_Sequence(f, time_step=time_step, verbose=verbose) \
         for f in files ]
-    if verbose:
-        print "Total sequences: {}".format(len(sequences))
     # filter out the non 2-track MIDI's
     sequences = filter(lambda x: x[1] != None, sequences)
-    if verbose:
-        print "Total sequences left: {}".format(len(sequences))
 
     return sequences
 
@@ -70,8 +66,6 @@ def Data_to_Sequence(input_filename, time_step, verbose=False):
         "name": input_filename.split("/")[-1].split(".")[0]
     }
     if len(pattern) != 3:
-        if verbose:
-            "Skipping track with {} tracks".format(len(pattern))
         return (metadata, None)
     # ticks_per_quarter = -1
     for msg in pattern[0]:
@@ -82,6 +76,15 @@ def Data_to_Sequence(input_filename, time_step, verbose=False):
             dem  = 2** (pattern[0][2].data[1])
             sig = (num, dem)
             metadata["signature"] = sig
+            if sig not in sigs:
+                sigs[sig] = 1
+            else:
+                sigs[sig] += 1
+                
+            if fourByFour == True:
+                if (num == 3 or num == 6) or (dem !=4):
+
+                    return (metadata, None)
 
     # Track ingestion stage
     track_ticks = 0
@@ -105,15 +108,7 @@ def Data_to_Sequence(input_filename, time_step, verbose=False):
     harmony_sequence = midi_util.round_notes(harmony_notes, track_ticks, time_step)
 
     harmonies = []
-    SHARPS_TO_FLATS = {
-    "A#": "Bb",
-    "B#": "C",
-    "C#": "Db",
-    "D#": "Eb",
-    "E#": "F",
-    "F#": "Gb",
-    "G#": "Ab",
-    }
+    flat_note = {"A#": "Bb", "B#": "C", "C#": "Db", "D#": "Eb", "E#": "F", "F#": "Gb", "G#": "Ab",}
     #Identify chords from track 1 notes using mingus library 
     for i in range(harmony_sequence.shape[0]):
         notes = np.where(harmony_sequence[i] == 1)[0]
@@ -122,7 +117,7 @@ def Data_to_Sequence(input_filename, time_step, verbose=False):
             chord = mingus.core.chords.determine(notes_shift, shorthand=True)
             if len(chord) == 0:
                 # try flat combinations
-                notes_shift = [ SHARPS_TO_FLATS[n] if n in SHARPS_TO_FLATS else n for n in notes_shift]
+                notes_shift = [ flat_note[n] if n in flat_note else n for n in notes_shift]
                 chord = mingus.core.chords.determine(notes_shift, shorthand=True)
             if len(chord) == 0:
                 #print "Could not determine chord: {} ({}, {}), defaulting to last steps chord" \
@@ -130,15 +125,15 @@ def Data_to_Sequence(input_filename, time_step, verbose=False):
                 if len(harmonies) > 0:
                     harmonies.append(harmonies[-1])
                 else:
-                    harmonies.append(NO_CHORD)
+                    harmonies.append(unkChord)
             else:
                 resolved = resolve_chord(chord[0])
                 if resolved:
                     harmonies.append(resolved)
                 else:
-                    harmonies.append(NO_CHORD)
+                    harmonies.append(unkChord)
         else:
-            harmonies.append(NO_CHORD)
+            harmonies.append(unkChord)
     return (metadata, (melody_sequence, harmonies))
 
 def combine(melody, harmony):
@@ -153,7 +148,7 @@ def combine(melody, harmony):
         assert np.count_nonzero(melody[i, :]) == 1
     # add all the melodies
     full[:, :melody.shape[1]] += melody
-    harmony_idxs = [ chord_mapping[h] if h in chord_mapping else chord_mapping[NO_CHORD] \
+    harmony_idxs = [ chord_mapping[h] if h in chord_mapping else chord_mapping[unkChord] \
                      for h in harmony ]
     harmony_idxs = [ Melody_Range + h for h in harmony_idxs ]
     full[np.arange(len(harmony)), harmony_idxs] = 1
@@ -164,20 +159,40 @@ def combine(melody, harmony):
     return full
 
 
-#%%##############################################################################################
+#%%############################################################################
+zeroPad = True
 counter = True
+normCount = True
 Shift = True
 
-pickle_loc = 'data/nottingham_subset.pickle'
+counterQB = False
+counterB = True
+fourByFour = False
+
+
+
+
+#data and processed data locations
+pickle_loc = 'data/nottingham_allin_notStep.pickle'
+data_loc = 'data/Nottingham/{}'
+
+#pickle_loc = 'data/nottingham_subset.pickle'
+#data_loc = 'data/Nottingham_subset/{}'
+
+maxMiniBatches = 10
+
 Melody_Max = 88
 Melody_Min = 55
 # add one to the range for silence in melody
 Melody_Range = Melody_Max - Melody_Min + 1 + 1
-CHORD_BASE = 48
-CHORD_BLACKLIST = [ 'major third', 'minor third', 'perfect fifth']
-NO_CHORD = 'NONE'
+#CHORD_BASE = 48
+chordEliminate = [ 'major third', 'minor third', 'perfect fifth']
+#unknown chord type
+unkChord = 'NONE'
+#chord midi value limit 
+chordLimit=64
 
-
+sigs = {}
 data = {} 
 store = {} 
 chords = {} 
@@ -185,14 +200,17 @@ seq_lens = []
 max_seq = 0
 resolution = 480
 time_step = 120
-chord_cutoff=64
+
  
 if __name__ == "__main__":
-
+    # array shifting for appending counters 
+    def shift(l,n):
+        return itertools.islice(itertools.cycle(l),n,n+len(l))
+    
     # Parse midi data 
     for d in ["train", "valid"]:
-        print "Parsing {}...".format(d)
-        parsed = Parse_Data("data/Nottingham_subset/{}".format(d), time_step, verbose=False)
+        print "Parsing Dataset : {}...".format(d)
+        parsed = Parse_Data(data_loc.format(d), time_step, verbose=False)
         metadata = [s[0] for s in parsed]
         seqs = [s[1] for s in parsed]
         data[d] = seqs
@@ -204,6 +222,14 @@ if __name__ == "__main__":
         seq_lens += lens
         max_seq = max(max_seq, max(lens))
         
+        # count chord frequencies from the dataset
+        for _, harmony in seqs:
+            for h in harmony:
+                if h not in chords:
+                    chords[h] = 1
+                else:
+                    chords[h] += 1
+        
         #create counter vector , reverse and store in the data dictionary for appending later
         if counter == True:
             length = []
@@ -212,16 +238,21 @@ if __name__ == "__main__":
             length += [range(x) for x in lens]
             for y in length:
                 y = y[::-1]
+                if normCount == True:
+                    y2 = copy.deepcopy(y)
+                    norm = [float(i)/max(y) for i in y] # optional normalize
+                    y = norm
                 tt = ([[item] for item in y])
                 rev +=[tt]
+            
+                
             data[d + '_count'] = rev
+            
+                    #Calculate the value of shifts required to move 0 back to beginning of last note 
+        if Shift == True:
 
-            #Calculate the value of shifts required to move 0 back to beginning of last note 
-            if Shift == True:
-                def shift(l,n):
-                    return itertools.islice(itertools.cycle(l),n,n+len(l))
-                rev2 = copy.deepcopy(rev)
-                shifted = []
+            rev2 = copy.deepcopy(rev)
+            shifted = []
             #swap current and previous until note changes
             for x, y in seqs:
                 n = -1
@@ -241,20 +272,94 @@ if __name__ == "__main__":
                 shifted += [count] 
 
             data[d + '_count_shift'] = shifted
-               
-        # count chord frequencies from the dataset
-        for _, harmony in seqs:
-            for h in harmony:
-                if h not in chords:
-                    chords[h] = 1
+
+        #adding quaterbeat/4 timestep information         
+        if counterQB == True:
+            
+            tSteps = [[1,0,0,0], [0,1,0,0], [0,0,1,0], [0,0,0,1]]
+            #tSteps = [[1], [2], [3], [4]] 
+            tStepFinal = []
+            for dur in lens:
+                rep = dur//4
+                rem = dur%4
+                # duration , repitition of quarterbeats and remianing timesteps
+                #print dur, rep, rem
+                tStepVec = []
+                for _ in range(rep):
+                    tStepVec += tSteps
+                if rem > 0:
+                    padStep = []
+                    for _ in range(rem):
+                        padStep += [[0,0,0,0]]
+                        #padStep += [[0]]
+                    tStepFinal += [padStep+ tStepVec]
                 else:
-                    chords[h] += 1
+                    tStepFinal += ([tStepVec])
+                
+            data[d + '_countQB'] = tStepFinal
+            
+        if counterB == True:
+            tSteps = [[1,0,0,0], [1,0,0,0], [1,0,0,0], [1,0,0,0],  
+                      [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], 
+                      [0,0,1,0], [0,0,1,0], [0,0,1,0], [0,0,1,0],
+                      [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1]]
+            tStepFinal = []
+            for dur in lens:
+                beat = dur//16
+                rep = dur//4
+                rem = dur%4
+                # duration , repitition of quarterbeats and remianing timesteps
+                #print dur, rep, rem
+                tStepVec = []
+                x = rem + 1
+                y = 0
+                while x <= dur:
+                    tStepVec += [tSteps[y]]
+                    y = 0 if y == 15 else y+1
+                    x = x+1
+                if rem > 0:
+                    padStep = []
+                    for _ in range(rem):
+                        padStep += [[0,0,0,0]]
+                    tStepFinal += [padStep+ tStepVec]
+                else:
+                    tStepFinal += ([tStepVec])
+            data[d + '_countB'] = tStepFinal
+           
+#        if counterFB == True:
+#            tSteps = [[1,0,0,0], [1,0,0,0], [1,0,0,0], [1,0,0,0], [1,0,0,0], [1,0,0,0], [1,0,0,0], [1,0,0,0],[1,0,0,0], [1,0,0,0], [1,0,0,0], [1,0,0,0],[1,0,0,0], [1,0,0,0], [1,0,0,0], [1,0,0,0],  
+#                      [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0], 
+#                      [0,0,1,0], [0,0,1,0], [0,0,1,0], [0,0,1,0], [0,0,1,0], [0,0,1,0], [0,0,1,0], [0,0,1,0],[0,0,1,0], [0,0,1,0], [0,0,1,0], [0,0,1,0],[0,0,1,0], [0,0,1,0], [0,0,1,0], [0,0,1,0],
+#                      [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1], [0,0,0,1]]
+#            tStepFinal = []
+#            for dur in lens:
+#                beat = dur//16
+#                rep = dur//4
+#                rem = dur%4
+#                # duration , repitition of quarterbeats and remianing timesteps
+#                #print dur, rep, rem
+#                tStepVec = []
+#                x = rem + 1
+#                y = 0
+#                while x <= dur:
+#                    tStepVec += [tSteps[y]]
+#                    y = 0 if y == 63 else y+1
+#                    x = x+1
+#                if rem > 0:
+#                    padStep = []
+#                    for _ in range(rem):
+#                        padStep += [[0,0,0,0]]
+#                    tStepFinal += [padStep+ tStepVec]
+#                else:
+#                    tStepFinal += ([tStepVec])
+#            data[d + '_countFB'] = tStepFinal
+
                     
     #Calculate average length, which may be used for identifying batch timestep length 
     avg_seq = float(sum(seq_lens)) / len(seq_lens)
         
     #Prepare chord index for harmony one hot vector    
-    chords = { c: i for c, i in chords.iteritems() if chords[c] >= chord_cutoff }
+    chords = { c: i for c, i in chords.iteritems() if chords[c] >= chordLimit }
     chord_mapping = { c: i for i, c in enumerate(chords.keys()) }
     num_chords = len(chord_mapping)
     store['chord_to_idx'] = chord_mapping
@@ -273,32 +378,49 @@ if __name__ == "__main__":
     print "Num Sequences: {}".format(len(seq_lens))
 
 #%%
-    #Combine melody and harmony vectors        
+    # combine 
+    def attach(data, counter):
+        result = []
+        result = [np.hstack((a[0], np.array(b[0])))]
+        for i in range(1, len(a)):
+            result.append(np.hstack((a[i], np.array(b[i]))))
+        store[d] = result
+        return None 
+
+    #Combine melody and harmony vectors      
     for d in ["train", "valid"]:
         print "Combining {}".format(d)
         #combine melody and hamorny one hot vectors into a single vector           
         store[d] = [ combine(m, h ) for m, h in data[d] ]
         store[d + '_metadata'] = data[d + '_metadata']
         
-        #save pickle data with optional counter
+        #save pickle data with optional counters
         if counter == True:        
             a = store[d]
             if Shift == True:
                 b = data[d+'_count_shift']
             else:
                 b = data[d+'_count']
-            result = []
-            result = [np.hstack((a[0], np.array(b[0])))]
-            for i in range(1, len(a)):
-                result.append(np.hstack((a[i], np.array(b[i]))))
-            store[d] = result
-            filename= pickle_loc 
-            with open(filename, 'w') as f:
-                cPickle.dump(store, f, protocol=-1)
-        else:
-            filename=pickle_loc
-            with open(filename, 'w') as f:
-                cPickle.dump(store, f, protocol=-1)
+            attach(a,b)
+
+        if counterQB == True:
+            a = store[d]
+            b = data[d + '_countQB']
+            attach(a,b)
+        
+        if counterB == True:
+            a = store[d]
+            b = data[d + '_countB']
+            attach(a,b)
+#
+#        if counterFB == True:
+#            a = store[d]
+#            b = data[d + '_countFB']
+#            attach(a,b)
+
+        filename=pickle_loc
+        with open(filename, 'w') as f:
+            cPickle.dump(store, f, protocol=-1)
 
         
       
